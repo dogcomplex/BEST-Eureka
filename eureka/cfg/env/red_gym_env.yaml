@@ -1,0 +1,3 @@
+task: PokemonRed
+env_name: red_gym_env
+description: train a machine learning model to beat the gameboy game pokemon red, given some preliminary code utilizing the pyboy library to send inputs to an emulator.

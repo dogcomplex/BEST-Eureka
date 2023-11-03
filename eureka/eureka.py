@@ -18,6 +18,7 @@ from utils.extract_task_code import *
 
 EUREKA_ROOT_DIR = os.getcwd()
 ISAAC_ROOT_DIR = f"{EUREKA_ROOT_DIR}/../isaacgymenvs/isaacgymenvs"
+POKEMON_ROOT_DIR = f"{EUREKA_ROOT_DIR}/../PokemonRedExperiments/baselines"
 
 @hydra.main(config_path="cfg", config_name="config", version_base="1.1")
 def main(cfg):
@@ -36,13 +37,25 @@ def main(cfg):
     logging.info("Task description: " + task_description)
 
     env_name = cfg.env.env_name.lower()
-    env_parent = 'isaac' if f'{env_name}.py' in os.listdir(f'{EUREKA_ROOT_DIR}/envs/isaac') else 'dexterity'
+    if f'{env_name}.py' in os.listdir(f'{EUREKA_ROOT_DIR}/envs/pokemon'):
+        env_parent = 'pokemon'
+    elif f'{env_name}.py' in os.listdir(f'{EUREKA_ROOT_DIR}/envs/isaac'):
+        env_parent = 'isaac' 
+    else:
+        env_parent = 'dexterity'
     task_file = f'{EUREKA_ROOT_DIR}/envs/{env_parent}/{env_name}.py'
     task_obs_file = f'{EUREKA_ROOT_DIR}/envs/{env_parent}/{env_name}_obs.py'
     shutil.copy(task_obs_file, f"env_init_obs.py")
     task_code_string  = file_to_string(task_file)
     task_obs_code_string  = file_to_string(task_obs_file)
-    output_file = f"{ISAAC_ROOT_DIR}/tasks/{env_name}{suffix.lower()}.py"
+    # set env_dir according to env_parent
+    if env_parent == 'isaac':
+        env_dir = ISAAC_ROOT_DIR
+    elif env_parent == 'pokemon':
+        env_dir = POKEMON_ROOT_DIR
+    else:
+        env_dir = ISAAC_ROOT_DIR # default code just seemed to use ISAAC_ROOT_DIR
+    output_file = f"{env_dir}/tasks/{env_name}{suffix.lower()}.py"
 
     # Loading all text prompts
     prompt_dir = f'{EUREKA_ROOT_DIR}/utils/prompts'
@@ -60,7 +73,7 @@ def main(cfg):
 
     task_code_string = task_code_string.replace(task, task+suffix)
     # Create Task YAML files
-    create_task(ISAAC_ROOT_DIR, cfg.env.task, cfg.env.env_name, suffix)
+    create_task(env_dir, cfg.env.task, cfg.env.env_name, suffix)
 
     DUMMY_FAILURE = -10000.
     max_successes = []
@@ -88,6 +101,7 @@ def main(cfg):
                 break
             for attempt in range(1000):
                 try:
+                    logging.info(f"Iteration {iter}: Attempt {attempt+1} with chunk size {chunk_size}, message {messages}")
                     response_cur = openai.ChatCompletion.create(
                         model=model,
                         messages=messages,
@@ -148,7 +162,7 @@ def main(cfg):
             try:
                 gpt_reward_signature, input_lst = get_function_signature(code_string)
             except Exception as e:
-                logging.info(f"Iteration {iter}: Code Run {response_id} cannot parse function signature!")
+                logging.info(f"Iteration {iter}: Code Run {response_id} cannot parse function signature! {code_string}")
                 continue
 
             code_runs.append(code_string)
@@ -164,6 +178,7 @@ def main(cfg):
             elif "def compute_reward(self, actions)" in task_code_string:
                 task_code_string_iter = task_code_string.replace("def compute_reward(self, actions):", "def compute_reward(self, actions):\n" + reward_signature)
             else:
+                logging.info(f"Iteration {iter}: Code Run {response_id} cannot find compute_reward function in the environment code! {task_code_string}")
                 raise NotImplementedError
 
             # Save the new environment code when the output contains valid code string!
@@ -183,19 +198,24 @@ def main(cfg):
             # Copy the generated environment code to hydra output directory for bookkeeping
             shutil.copy(output_file, f"env_iter{iter}_response{response_id}.py")
 
+            logging.info(f"Iteration {iter}: Code Run {response_id} saved to {output_file}")
             # Find the freest GPU to run GPU-accelerated RL
             set_freest_gpu()
             
             # Execute the python file with flags
             rl_filepath = f"env_iter{iter}_response{response_id}.txt"
             with open(rl_filepath, 'w') as f:
-                process = subprocess.Popen(['python', '-u', f'{ISAAC_ROOT_DIR}/train.py',  
-                                            'hydra/output=subprocess',
-                                            f'task={task}{suffix}', f'wandb_activate={cfg.use_wandb}',
-                                            f'wandb_entity={cfg.wandb_username}', f'wandb_project={cfg.wandb_project}',
-                                            f'headless={not cfg.capture_video}', f'capture_video={cfg.capture_video}', 'force_render=False',
-                                            f'max_iterations={cfg.max_iterations}'],
-                                            stdout=f, stderr=f)
+                if env_parent == 'pokemon':
+                    process = subprocess.Popen(['python', '-u', f'{env_dir}/baseline_parallel_fast.py'],
+                        stdout=f, stderr=f)
+                else:
+                    process = subprocess.Popen(['python', '-u', f'{env_dir}/train.py',  
+                        'hydra/output=subprocess',
+                        f'task={task}{suffix}', f'wandb_activate={cfg.use_wandb}',
+                        f'wandb_entity={cfg.wandb_username}', f'wandb_project={cfg.wandb_project}',
+                        f'headless={not cfg.capture_video}', f'capture_video={cfg.capture_video}', 'force_render=False',
+                        f'max_iterations={cfg.max_iterations}'],
+                        stdout=f, stderr=f)
             block_until_training(rl_filepath, log_status=True, iter_num=iter, response_id=response_id)
             rl_runs.append(process)
         
@@ -273,8 +293,10 @@ def main(cfg):
                 reward_correlations.append(DUMMY_FAILURE)
                 content += execution_error_feedback.format(traceback_msg=traceback_msg)
 
+
             content += code_output_tip
-            contents.append(content) 
+            contents.append(content)
+            logging.info(content)
         
         # Repeat the iteration if all code generation failed
         if not exec_success and cfg.sample != 1:
@@ -282,6 +304,7 @@ def main(cfg):
             max_successes.append(DUMMY_FAILURE)
             max_successes_reward_correlation.append(DUMMY_FAILURE)
             best_code_paths.append(None)
+            logging.info(contents)
             logging.info("All code generation failed! Repeat this iteration from the current message checkpoint!")
             continue
 
@@ -355,7 +378,7 @@ def main(cfg):
         # Execute the python file with flags
         rl_filepath = f"reward_code_eval{i}.txt"
         with open(rl_filepath, 'w') as f:
-            process = subprocess.Popen(['python', '-u', f'{ISAAC_ROOT_DIR}/train.py',  
+            process = subprocess.Popen(['python', '-u', f'{env_dir}/train.py',  
                                         'hydra/output=subprocess',
                                         f'task={task}{suffix}', f'wandb_activate={cfg.use_wandb}',
                                         f'wandb_entity={cfg.wandb_username}', f'wandb_project={cfg.wandb_project}',
