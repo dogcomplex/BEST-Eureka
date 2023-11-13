@@ -19,7 +19,6 @@ def load_tensorboard_logs(path):
         events = event_acc.Scalars(tag)
         for event in events:
             data[tag].append(event.value)
-    
     return data
 
 import importlib.util

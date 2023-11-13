@@ -34,7 +34,7 @@ def block_until_training(rl_filepath, log_status=False, iter_num=-1, response_id
     # Ensure that the RL training has started before moving on
     while True:
         rl_log = file_to_string(rl_filepath)
-        if "fps step:" in rl_log or "Traceback" in rl_log:
+        if "fps step:" in rl_log or "Traceback" in rl_log or "step:" in rl_log:
             if log_status and "fps step:" in rl_log:
                 logging.info(f"Iteration {iter_num}: Code Run {response_id} successfully training!")
             if log_status and "Traceback" in rl_log:

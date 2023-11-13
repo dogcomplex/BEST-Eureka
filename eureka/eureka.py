@@ -49,10 +49,12 @@ def main(cfg):
     task_code_string  = file_to_string(task_file)
     task_obs_code_string  = file_to_string(task_obs_file)
     # set env_dir according to env_parent
+    training_script = 'train.py'
     if env_parent == 'isaac':
         env_dir = ISAAC_ROOT_DIR
     elif env_parent == 'pokemon':
         env_dir = POKEMON_ROOT_DIR
+        training_script = 'run_baseline_parallel_fast.py'
     else:
         env_dir = ISAAC_ROOT_DIR # default code just seemed to use ISAAC_ROOT_DIR
     output_file = f"{env_dir}/tasks/{env_name}{suffix.lower()}.py"
@@ -60,10 +62,20 @@ def main(cfg):
     # Loading all text prompts
     prompt_dir = f'{EUREKA_ROOT_DIR}/utils/prompts'
     initial_system = file_to_string(f'{prompt_dir}/initial_system.txt')
-    code_output_tip = file_to_string(f'{prompt_dir}/code_output_tip.txt')
+    if env_parent == 'pokemon':
+        code_output_tip = file_to_string(f'{prompt_dir}/code_output_tip_pokemon.txt')
+        pokemon_codes = file_to_string(f'{prompt_dir}/pokemon_codes.txt')
+        # only add this if gpt model context length is long enough:
+        # TODO measure context length of gpt model
+        # code_output_tip += pokemon_codes
+    else:
+        code_output_tip = file_to_string(f'{prompt_dir}/code_output_tip.txt')
     code_feedback = file_to_string(f'{prompt_dir}/code_feedback.txt')
     initial_user = file_to_string(f'{prompt_dir}/initial_user.txt')
-    reward_signature = file_to_string(f'{prompt_dir}/reward_signature.txt')
+    if env_parent == 'pokemon':
+        reward_signature = file_to_string(f'{prompt_dir}/reward_signature_general.txt')
+    else:
+        reward_signature = file_to_string(f'{prompt_dir}/reward_signature.txt')
     policy_feedback = file_to_string(f'{prompt_dir}/policy_feedback.txt')
     execution_error_feedback = file_to_string(f'{prompt_dir}/execution_error_feedback.txt')
 
@@ -82,7 +94,7 @@ def main(cfg):
     best_code_paths = []
     max_success_overall = DUMMY_FAILURE
     max_success_reward_correlation_overall = DUMMY_FAILURE
-    max_reward_code_path = None 
+    max_reward_code_path = None
     
     # Eureka generation loop
     for iter in range(cfg.iteration):
@@ -92,16 +104,18 @@ def main(cfg):
         total_samples = 0
         total_token = 0
         total_completion_token = 0
-        chunk_size = cfg.sample if "gpt-3.5" in model else 4
+        chunk_size = cfg.sample # if "gpt-3.5" in model else 4
+        retry_delay = 10 #seconds
+        retry_delay_exponent = 1.5
 
         logging.info(f"Iteration {iter}: Generating {cfg.sample} samples with {cfg.model}")
 
         while True:
             if total_samples >= cfg.sample:
                 break
-            for attempt in range(1000):
+            for attempt in range(100):
                 try:
-                    logging.info(f"Iteration {iter}: Attempt {attempt+1} with chunk size {chunk_size}, message {messages}")
+                    logging.info(f"Iteration {iter}: Attempt {attempt+1} with chunk size {chunk_size}")
                     response_cur = openai.ChatCompletion.create(
                         model=model,
                         messages=messages,
@@ -115,7 +129,8 @@ def main(cfg):
                         chunk_size = max(int(chunk_size / 2), 1)
                         print("Current Chunk Size", chunk_size)
                     logging.info(f"Attempt {attempt+1} failed with error: {e}")
-                    time.sleep(1)
+                    time.sleep(retry_delay)
+                    retry_delay *= retry_delay_exponent
             if response_cur is None:
                 logging.info("Code terminated due to too many failed attempts!")
                 exit()
@@ -127,6 +142,34 @@ def main(cfg):
 
         if cfg.sample == 1:
             logging.info(f"Iteration {iter}: GPT Output:\n " + responses[0]["message"]["content"] + "\n")
+        
+        def pretty_print_obj(obj, file, indent=0, allow_value_linebreaks=True):
+            for key, value in obj.items():
+                if isinstance(value, dict):
+                    file.write('  ' * indent + str(key) + ': \n')
+                    pretty_print_obj(value, file, indent+1)
+                else:
+                    if allow_value_linebreaks and isinstance(value, str):
+                        value = value.replace('\n', '\n' + '  ' * indent)
+                    file.write('  ' * indent + str(key) + ': ' + str(value) + '\n')
+
+            
+        
+        # write request + response to file for current iteration:
+        with open(f"iter{iter}_response{total_samples-chunk_size}_to_{total_samples}.txt", 'w') as file:
+            # pretty print request messages to text file
+            file.write("\n========================================================Messages:\n\n\n")
+            for message in messages:
+                file.write("\n--------------------------------------------------------\n\n")
+                pretty_print_obj(message, file)
+            
+            file.write("\n========================================================Responses:\n\n\n")
+            for response in responses:
+                file.write("\n--------------------------------------------------------\n\n")
+                pretty_print_obj(response, file)
+
+        
+
 
         # Logging Token Information
         logging.info(f"Iteration {iter}: Prompt Tokens: {prompt_tokens}, Completion Tokens: {total_completion_token}, Total Tokens: {total_token}")
@@ -206,10 +249,12 @@ def main(cfg):
             rl_filepath = f"env_iter{iter}_response{response_id}.txt"
             with open(rl_filepath, 'w') as f:
                 if env_parent == 'pokemon':
-                    process = subprocess.Popen(['python', '-u', f'{env_dir}/baseline_parallel_fast.py'],
+                    process = subprocess.Popen(['python', '-u', f'{env_dir}/{training_script}'],
+                        #f'task={task}{suffix}',
+                        #'hydra/output=subprocess',
                         stdout=f, stderr=f)
                 else:
-                    process = subprocess.Popen(['python', '-u', f'{env_dir}/train.py',  
+                    process = subprocess.Popen(['python', '-u', f'{env_dir}/{training_script}',  
                         'hydra/output=subprocess',
                         f'task={task}{suffix}', f'wandb_activate={cfg.use_wandb}',
                         f'wandb_entity={cfg.wandb_username}', f'wandb_project={cfg.wandb_project}',
@@ -228,7 +273,9 @@ def main(cfg):
         
         exec_success = False 
         for response_id, (code_run, rl_run) in enumerate(zip(code_runs, rl_runs)):
+            print(f"Code Run {response_id} executing...")
             rl_run.communicate()
+            print(f"Code Run {response_id} finished!")
             rl_filepath = f"env_iter{iter}_response{response_id}.txt"
             code_paths.append(f"env_iter{iter}_response{response_id}.py")
             try:
@@ -253,12 +300,35 @@ def main(cfg):
                     if line.startswith('Tensorboard Directory:'):
                         break 
                 tensorboard_logdir = line.split(':')[-1].strip() 
-                tensorboard_logs = load_tensorboard_logs(tensorboard_logdir)
+                if env_parent == 'pokemon':
+                    tensorboard_logs = {}
+                    for i, line in enumerate(lines):
+                        if line.startswith('step:'):
+                            # split on whitespace to get key-value pairs
+                            # keys on even indices, values on odd indices
+                            # convert to dict
+                            # for each key, append to the tensor in tensorboard_logs
+                            items = [item.strip().strip(':').strip('-') for item in line.split()]
+                            keys = items[::2]
+                            # wrap each value in a list
+                            values = [float(x) for x in items[1::2]]
+                            # append to tensorboard_logs
+                            for key, value in zip(keys, values):
+                                if key not in tensorboard_logs:
+                                    tensorboard_logs[key] = []
+                                tensorboard_logs[key].append(value)
+                    tensorboard_logs['gt_reward'] = tensorboard_logs['sum']
+                    tensorboard_logs['gpt_reward'] = tensorboard_logs['sum']
+                    tensorboard_logs['consecutive_successes'] = [1]
+                else:
+                    tensorboard_logs = load_tensorboard_logs(tensorboard_logdir)
+                #print(f"OUTPUT ====== {tensorboard_logs} {stdout_str}")
+                
                 max_iterations = np.array(tensorboard_logs['gt_reward']).shape[0]
                 epoch_freq = max(int(max_iterations // 10), 1)
                 
                 content += policy_feedback.format(epoch_freq=epoch_freq)
-                
+                    
                 # Compute Correlation between Human-Engineered and GPT Rewards
                 if "gt_reward" in tensorboard_logs and "gpt_reward" in tensorboard_logs:
                     gt_reward = np.array(tensorboard_logs["gt_reward"])
@@ -392,7 +462,9 @@ def main(cfg):
     reward_code_final_successes = []
     reward_code_correlations_final = []
     for i, rl_run in enumerate(eval_runs):
+        print(f"Reward code Run {i} executing...")
         rl_run.communicate()
+        print(f"Reward code Run {i} finished!")
         rl_filepath = f"reward_code_eval{i}.txt"
         with open(rl_filepath, 'r') as f:
             stdout_str = f.read() 
@@ -401,7 +473,28 @@ def main(cfg):
             if line.startswith('Tensorboard Directory:'):
                 break 
         tensorboard_logdir = line.split(':')[-1].strip() 
-        tensorboard_logs = load_tensorboard_logs(tensorboard_logdir)
+        if env_parent == 'pokemon':
+            tensorboard_logs = {}
+            for i, line in enumerate(lines):
+                if line.startswith('step:'):
+                    # split on whitespace to get key-value pairs
+                    # keys on even indices, values on odd indices
+                    # convert to dict
+                    # for each key, append to the tensor in tensorboard_logs
+                    items = [item.strip().strip(':').strip('-') for item in line.split()]
+                    keys = items[::2]
+                    # wrap each value in a list
+                    values = [float(x) for x in items[1::2]]
+                    # append to tensorboard_logs
+                    for key, value in zip(keys, values):
+                        if key not in tensorboard_logs:
+                            tensorboard_logs[key] = []
+                        tensorboard_logs[key].append(value)
+            tensorboard_logs['gt_reward'] = tensorboard_logs['sum']
+            tensorboard_logs['gpt_reward'] = tensorboard_logs['sum']
+            tensorboard_logs['consecutive_successes'] = [1]
+        else:
+            tensorboard_logs = load_tensorboard_logs(tensorboard_logdir)
         max_success = max(tensorboard_logs['consecutive_successes'])
         reward_code_final_successes.append(max_success)
 
