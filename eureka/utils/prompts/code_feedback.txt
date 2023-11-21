@@ -4,5 +4,6 @@ Please carefully analyze the policy feedback and provide a new, improved reward 
         (a) Changing its scale or the value of its temperature parameter
         (b) Re-writing the reward component 
         (c) Discarding the reward component
+	(d) Focusing on reward components that do change instead, ignoring static ones
     (3) If some reward components' magnitude is significantly larger, then you must re-scale its value to a proper range
 Please analyze each existing reward component in the suggested manner above first, and then write the reward function code. 

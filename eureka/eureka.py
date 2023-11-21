@@ -156,7 +156,7 @@ def main(cfg):
             
         
         # write request + response to file for current iteration:
-        with open(f"iter{iter}_response{total_samples-chunk_size}_to_{total_samples}.txt", 'w') as file:
+        with open(f"iter{iter}_response{total_samples-chunk_size}_to_{total_samples}.txt", 'w', encoding="utf-8") as file:
             # pretty print request messages to text file
             file.write("\n========================================================Messages:\n\n\n")
             for message in messages:
@@ -209,11 +209,16 @@ def main(cfg):
                 continue
 
             code_runs.append(code_string)
-            reward_signature = [
-                f"self.rew_buf[:], self.rew_dict = {gpt_reward_signature}",
-                f"self.extras['gpt_reward'] = self.rew_buf.mean()",
-                f"for rew_state in self.rew_dict: self.extras[rew_state] = self.rew_dict[rew_state].mean()",
-            ]
+            if (env_parent == 'pokemon'):
+                reward_signature = [
+                    f"total_reward, sub_rewards = {gpt_reward_signature}",
+                ]
+            else:
+                reward_signature = [
+                    f"self.rew_buf[:], self.rew_dict = {gpt_reward_signature}",
+                    f"self.extras['gpt_reward'] = self.rew_buf.mean()",
+                    f"for rew_state in self.rew_dict: self.extras[rew_state] = self.rew_dict[rew_state].mean()",
+                ]
             indent = " " * 8
             reward_signature = "\n".join([indent + line for line in reward_signature])
             if "def compute_reward(self)" in task_code_string:
@@ -225,17 +230,17 @@ def main(cfg):
                 raise NotImplementedError
 
             # Save the new environment code when the output contains valid code string!
-            with open(output_file, 'w') as file:
+            with open(output_file, 'w', encoding="utf-8") as file:
                 file.writelines(task_code_string_iter + '\n')
                 file.writelines("from typing import Tuple, Dict" + '\n')
                 file.writelines("import math" + '\n')
                 file.writelines("import torch" + '\n')
                 file.writelines("from torch import Tensor" + '\n')
-                if "@torch.jit.script" not in code_string:
+                if "@torch.jit.script" not in code_string and env_parent != 'pokemon':
                     code_string = "@torch.jit.script\n" + code_string
                 file.writelines(code_string + '\n')
 
-            with open(f"env_iter{iter}_response{response_id}_rewardonly.py", 'w') as file:
+            with open(f"env_iter{iter}_response{response_id}_rewardonly.py", 'w', encoding="utf-8") as file:
                 file.writelines(code_string + '\n')
 
             # Copy the generated environment code to hydra output directory for bookkeeping
@@ -247,19 +252,26 @@ def main(cfg):
             
             # Execute the python file with flags
             rl_filepath = f"env_iter{iter}_response{response_id}.txt"
-            with open(rl_filepath, 'w') as f:
+            with open(rl_filepath, 'w', encoding="utf-8") as f:
                 if env_parent == 'pokemon':
-                    process = subprocess.Popen(['python', '-u', f'{env_dir}/{training_script}'],
-                        #f'task={task}{suffix}',
-                        #'hydra/output=subprocess',
+                    process = subprocess.Popen([
+                            'python', '-u', f'{env_dir}/{training_script}',
+                            'hydra/output=subprocess',
+                            f'task={task}{suffix}',
+                            #f'headless={cfg.headless}',
+                            #f'save_video={cfg.capture_video}',
+                            f'gym_env=env_iter{iter}_response{response_id}',
+                        ],
                         stdout=f, stderr=f)
                 else:
-                    process = subprocess.Popen(['python', '-u', f'{env_dir}/{training_script}',  
-                        'hydra/output=subprocess',
-                        f'task={task}{suffix}', f'wandb_activate={cfg.use_wandb}',
-                        f'wandb_entity={cfg.wandb_username}', f'wandb_project={cfg.wandb_project}',
-                        f'headless={not cfg.capture_video}', f'capture_video={cfg.capture_video}', 'force_render=False',
-                        f'max_iterations={cfg.max_iterations}'],
+                    process = subprocess.Popen([
+                            'python', '-u', f'{env_dir}/{training_script}',  
+                            'hydra/output=subprocess',
+                            f'task={task}{suffix}', f'wandb_activate={cfg.use_wandb}',
+                            f'wandb_entity={cfg.wandb_username}', f'wandb_project={cfg.wandb_project}',
+                            f'headless={not cfg.capture_video}', f'capture_video={cfg.capture_video}', 'force_render=False',
+                            f'max_iterations={cfg.max_iterations}'
+                        ],
                         stdout=f, stderr=f)
             block_until_training(rl_filepath, log_status=True, iter_num=iter, response_id=response_id)
             rl_runs.append(process)
@@ -279,7 +291,7 @@ def main(cfg):
             rl_filepath = f"env_iter{iter}_response{response_id}.txt"
             code_paths.append(f"env_iter{iter}_response{response_id}.py")
             try:
-                with open(rl_filepath, 'r') as f:
+                with open(rl_filepath, 'r', encoding="utf-8") as f:
                     stdout_str = f.read() 
             except: 
                 content = execution_error_feedback.format(traceback_msg="Code Run cannot be executed due to function signature error! Please re-write an entirely new reward function!")
@@ -317,9 +329,12 @@ def main(cfg):
                                 if key not in tensorboard_logs:
                                     tensorboard_logs[key] = []
                                 tensorboard_logs[key].append(value)
+                    # delete tensorboard_logs['step']
+                    if ('step' in tensorboard_logs):
+                        del tensorboard_logs['step']
                     tensorboard_logs['gt_reward'] = tensorboard_logs['sum']
                     tensorboard_logs['gpt_reward'] = tensorboard_logs['sum']
-                    tensorboard_logs['consecutive_successes'] = [1]
+                    tensorboard_logs['consecutive_successes'] = [max(tensorboard_logs['sum']) - min(tensorboard_logs['sum'])]
                 else:
                     tensorboard_logs = load_tensorboard_logs(tensorboard_logdir)
                 #print(f"OUTPUT ====== {tensorboard_logs} {stdout_str}")
@@ -429,7 +444,7 @@ def main(cfg):
             messages[-1] = {"role": "user", "content": best_content}
 
         # Save dictionary as JSON file
-        with open('messages.json', 'w') as file:
+        with open('messages.json', 'w', encoding="utf-8") as file:
             json.dump(messages, file, indent=4)
     
     # Evaluate the best reward code many times
@@ -447,14 +462,25 @@ def main(cfg):
         
         # Execute the python file with flags
         rl_filepath = f"reward_code_eval{i}.txt"
-        with open(rl_filepath, 'w') as f:
-            process = subprocess.Popen(['python', '-u', f'{env_dir}/train.py',  
-                                        'hydra/output=subprocess',
-                                        f'task={task}{suffix}', f'wandb_activate={cfg.use_wandb}',
-                                        f'wandb_entity={cfg.wandb_username}', f'wandb_project={cfg.wandb_project}',
-                                        f'headless={not cfg.capture_video}', f'capture_video={cfg.capture_video}', 'force_render=False', f'seed={i}',
-                                        ],
-                                        stdout=f, stderr=f)
+        with open(rl_filepath, 'w', encoding="utf-8") as f:
+            if env_parent == 'pokemon':
+                process = subprocess.Popen([
+                        'python', '-u', f'{env_dir}/{training_script}',
+                        'hydra/output=subprocess',
+                        f'task={task}{suffix}',
+                        #f'headless={cfg.headless}',
+                        #f'save_video={cfg.capture_video}',
+                        f'gym_env=env_iter{iter}_response{response_id}',
+                    ],
+                    stdout=f, stderr=f)
+            else:
+                process = subprocess.Popen(['python', '-u', f'{env_dir}/train.py',  
+                        'hydra/output=subprocess',
+                        f'task={task}{suffix}', f'wandb_activate={cfg.use_wandb}',
+                        f'wandb_entity={cfg.wandb_username}', f'wandb_project={cfg.wandb_project}',
+                        f'headless={not cfg.capture_video}', f'capture_video={cfg.capture_video}', 'force_render=False', f'seed={i}',
+                    ],
+                    stdout=f, stderr=f)
 
         block_until_training(rl_filepath)
         eval_runs.append(process)
@@ -466,7 +492,7 @@ def main(cfg):
         rl_run.communicate()
         print(f"Reward code Run {i} finished!")
         rl_filepath = f"reward_code_eval{i}.txt"
-        with open(rl_filepath, 'r') as f:
+        with open(rl_filepath, 'r', encoding="utf-8") as f:
             stdout_str = f.read() 
         lines = stdout_str.split('\n')
         for i, line in enumerate(lines):
@@ -492,7 +518,7 @@ def main(cfg):
                         tensorboard_logs[key].append(value)
             tensorboard_logs['gt_reward'] = tensorboard_logs['sum']
             tensorboard_logs['gpt_reward'] = tensorboard_logs['sum']
-            tensorboard_logs['consecutive_successes'] = [1]
+            #tensorboard_logs['consecutive_successes'] = 
         else:
             tensorboard_logs = load_tensorboard_logs(tensorboard_logdir)
         max_success = max(tensorboard_logs['consecutive_successes'])
