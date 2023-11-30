@@ -283,7 +283,7 @@ def main(cfg):
         reward_correlations = []
         code_paths = []
         
-        exec_success = False 
+        exec_success = False
         for response_id, (code_run, rl_run) in enumerate(zip(code_runs, rl_runs)):
             print(f"Code Run {response_id} executing...")
             rl_run.communicate()
@@ -304,6 +304,7 @@ def main(cfg):
             content = ''
             traceback_msg = filter_traceback(stdout_str)
 
+            tensorboard_logs = {}
             if traceback_msg == '':
                 # If RL execution has no error, provide policy statistics feedback
                 exec_success = True
@@ -323,7 +324,9 @@ def main(cfg):
                             items = [item.strip().strip(':').strip('-') for item in line.split()]
                             keys = items[::2]
                             # wrap each value in a list
-                            values = [float(x) for x in items[1::2]]
+                            values = [x for x in items[1::2]]
+                            # aggressively extract the float number from string sentence (one per x).  0 if fail
+                            values = [float(re.findall(r"[-+]?\d*\.\d+|\d+", x)[0]) if len(re.findall(r"[-+]?\d*\.\d+|\d+", x)) > 0 else 0 for x in values]
                             # append to tensorboard_logs
                             for key, value in zip(keys, values):
                                 if key not in tensorboard_logs:
@@ -334,10 +337,9 @@ def main(cfg):
                         del tensorboard_logs['step']
                     tensorboard_logs['gt_reward'] = tensorboard_logs['sum']
                     tensorboard_logs['gpt_reward'] = tensorboard_logs['sum']
-                    tensorboard_logs['consecutive_successes'] = [max(tensorboard_logs['sum']) - min(tensorboard_logs['sum'])]
+                    tensorboard_logs['consecutive_successes'] = [max(tensorboard_logs['sum']) // min(tensorboard_logs['sum'])]
                 else:
                     tensorboard_logs = load_tensorboard_logs(tensorboard_logdir)
-                #print(f"OUTPUT ====== {tensorboard_logs} {stdout_str}")
                 
                 max_iterations = np.array(tensorboard_logs['gt_reward']).shape[0]
                 epoch_freq = max(int(max_iterations // 10), 1)
@@ -350,6 +352,7 @@ def main(cfg):
                     gpt_reward = np.array(tensorboard_logs["gpt_reward"])
                     reward_correlation = np.corrcoef(gt_reward, gpt_reward)[0, 1]
                     reward_correlations.append(reward_correlation)
+
 
                 # Add reward components log to the feedback
                 for metric in tensorboard_logs:
@@ -378,10 +381,11 @@ def main(cfg):
                 reward_correlations.append(DUMMY_FAILURE)
                 content += execution_error_feedback.format(traceback_msg=traceback_msg)
 
-
             content += code_output_tip
             contents.append(content)
-            logging.info(content)
+            logging.info(f"Iteration {iter}: Code Run {response_id} finished! Success rate: {successes[-1]}, Sum: {tensorboard_logs.get('sum', [0])[-1]}")
+            # logging.info(content)
+
         
         # Repeat the iteration if all code generation failed
         if not exec_success and cfg.sample != 1:
@@ -393,6 +397,7 @@ def main(cfg):
             logging.info("All code generation failed! Repeat this iteration from the current message checkpoint!")
             continue
 
+        logging.info(f"Iteration {iter}: Successes out of {cfg.sample} samples: {np.sum(np.array(successes) >= 0.)}")
         # Select the best code sample based on the success rate
         best_sample_idx = np.argmax(np.array(successes))
         best_content = contents[best_sample_idx]
