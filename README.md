@@ -198,18 +198,14 @@ ______________________________________________________________________
 https://github.com/eureka-research/Eureka/assets/21993118/1abb960d-321a-4de9-b311-113b5fc53d4a
 
 
-
-![](images/eureka.png)
-
-
 # PokemonRedExperiments: ML + PokemonRed
   
 <p float="left">
   <a href="https://youtu.be/DcYLT37ImBY">
-    <img src="/PokemonRedExperiments/assets/Pokemon YT5 FFFFinal.jpg?raw=true" height="192">
+    <img src="https://github.com/PWhiddy/PokemonRedExperiments/blob/master/assets/youtube.jpg?raw=true" height="192">
   </a>
   <a href="https://youtu.be/DcYLT37ImBY">
-    <img src="/PokemonRedExperiments/assets/poke_map.gif?raw=true" height="192">
+    <img src="https://github.com/PWhiddy/PokemonRedExperiments/blob/master/assets/poke_map.gif?raw=true" height="192">
   </a>
 </p>
 
